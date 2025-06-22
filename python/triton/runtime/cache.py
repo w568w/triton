@@ -8,6 +8,15 @@ import hashlib
 
 from .. import knobs
 
+# fixme: sglang requires these methods. Backward support to them.
+def default_cache_dir():
+    return knobs.cache.dir
+
+def default_dump_dir():
+    return knobs.cache.dump_dir
+
+def default_override_dir():
+    return knobs.cache.override_dir
 
 class CacheManager(ABC):
 
