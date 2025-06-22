@@ -439,8 +439,18 @@ class AsmDict(dict):
         self[key] = value
         return value
 
+# fixme: PyTorch 2.7.1 still looks for these properties on the kernel class
+# This is a workaround to make it work with PyTorch 2.7.1
+class MetaCompiledKernel(type):
+    @property
+    def launch_enter_hook(self):
+        return knobs.runtime.launch_enter_hook
 
-class CompiledKernel:
+    @property
+    def launch_exit_hook(self):
+        return knobs.runtime.launch_exit_hook
+
+class CompiledKernel(metaclass=MetaCompiledKernel):
 
     def __init__(self, src, metadata_group, hash):
         from collections import namedtuple
