@@ -38,13 +38,17 @@ Value shuffleIdx(Location loc, RewriterBase &rewriter, Value val, Value i,
                      mlir::triton::AMD::ISAFamily::Unknown);
 
 Value llGetPid(Location loc, RewriterBase &rewriter, ModuleOp moduleOp,
-               int axis);
+               ProgramIDDim axis);
 
 // Loads from shared or global memory with predication.
 // `otherElems` is used to mask out the elements that are not loaded
+// forceNoAliasAsyncLoads=true adds alias information to the llvm.load to
+// signal its not aliasing with any AsyncCopyGlobalToLocal/BufferLoadToLocal to
+// avoid conservative waits. See `addLocalLoadNoAliasScope` for more details
 Value llLoad(RewriterBase &rewriter, Location loc, Value ptr, Type elemTy,
              Value pred, Value falseVal,
-             triton::CacheModifier cm = triton::CacheModifier::NONE);
+             triton::CacheModifier cm = triton::CacheModifier::NONE,
+             bool forceNoAliasAsyncLoads = false);
 
 // Stores to shared or global memory with predication.
 // forceNoAliasAsyncLoads=true adds alias information to the llvm.store to
@@ -111,6 +115,11 @@ bool isChainDotHead(mlir::triton::DotOpInterface dotOp);
 // Check if the opA of this tl.dot is the result of another tl.dot
 // in the same region
 bool isChainDotTail(mlir::triton::DotOpInterface dotOp);
+
+// Software implementation of converting an 8-element vector of MXFP4 elements
+// to a wider type: BF16 or FP16
+SmallVector<Value, 4> upcast8xMxfp4_SW(RewriterBase &rewriter, Operation *op,
+                                       bool toFp16, Value packedVec);
 } // namespace mlir::LLVM::AMD
 
 #endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_UTILITY_H_

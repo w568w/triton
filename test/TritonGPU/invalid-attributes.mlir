@@ -42,25 +42,20 @@
 
 // -----
 
-// expected-error@+2 {{ttg.dot_op kWidth parameter must be 16 for gfx11 and 8/16 for gfx12}}
+// expected-error@+2 {{ttg.dot_op kWidth parameter must be 16 for gfx11 and 4/8/16 for gfx12 (including packed cases for `scaled_dot`)}}
 #wmma = #ttg.amd_wmma<{version = 1, warpsPerCTA = [1, 4]}>
 #dot_op = #ttg.dot_op<{opIdx = 1, parent = #wmma}>
 
 // -----
 
-// expected-error@+2 {{ttg.dot_op kWidth parameter must be 16 for gfx11 and 8/16 for gfx12}}
+// expected-error@+2 {{ttg.dot_op kWidth parameter must be 16 for gfx11 and 4/8/16 for gfx12 (including packed cases for `scaled_dot`)}}
 #wmma = #ttg.amd_wmma<{version = 1, warpsPerCTA = [1, 4]}>
 #dot_op = #ttg.dot_op<{opIdx = 1, parent = #wmma, kWidth = 8}>
 
 // -----
-// expected-error@+2 {{ttg.dot_op kWidth parameter must be 16 for gfx11 and 8/16 for gfx12}}
+// expected-error@+2 {{ttg.dot_op kWidth parameter must be 16 for gfx11 and 4/8/16 for gfx12 (including packed cases for `scaled_dot`)}}
 #wmma = #ttg.amd_wmma<{version = 2, warpsPerCTA = [1, 4]}>
 #dot_op = #ttg.dot_op<{opIdx = 1, parent = #wmma, kWidth = 32}>
-
-// -----
-// expected-error@+2 {{ttg.dot_op kWidth parameter must be 16 for gfx11 and 8/16 for gfx12}}
-#wmma = #ttg.amd_wmma<{version = 2, warpsPerCTA = [1, 4]}>
-#dot_op = #ttg.dot_op<{opIdx = 1, parent = #wmma, kWidth = 4}>
 
 // -----
 
@@ -69,8 +64,13 @@
 
 // -----
 
-// expected-error@+1 {{(M, N) cases other than (32, 32) or (16, 16) unimplemented}}
+// expected-error@+1 {{invalid (mDim, nDim) combination}}
 #mfma = #ttg.amd_mfma<{version = 2, warpsPerCTA = [1, 1, 1], instrShape = [16, 8], isTransposed = false}>
+
+// -----
+
+// expected-error@+1 {{element type must be f64, f32, i32, or none}}
+#mfma = #ttg.amd_mfma<{version = 2, warpsPerCTA = [1, 1, 1], instrShape = [16, 16], isTransposed = false, elementType = f16}>
 
 // -----
 

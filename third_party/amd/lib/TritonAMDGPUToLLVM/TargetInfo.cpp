@@ -1,5 +1,4 @@
 #include "TargetInfo.h"
-#include "SchedInstructions.h"
 #include "TritonAMDGPUToLLVM/GCNAsmFormat.h"
 #include "TritonAMDGPUToLLVM/TargetUtils.h"
 #include "Utility.h"
@@ -66,34 +65,7 @@ llvm::AMDGPU::GPUKind TargetInfo::getGPUKind() const {
   return llvm::AMDGPU::parseArchAMDGCN(arch);
 }
 
-bool TargetInfo::isCDNA() const {
-  switch (getISAFamily()) {
-  case ISAFamily::CDNA1:
-  case ISAFamily::CDNA2:
-  case ISAFamily::CDNA3:
-  case ISAFamily::CDNA4:
-    return true;
-  default:
-    break;
-  }
-
-  return false;
-}
-
-bool TargetInfo::isRDNA() const {
-  switch (getISAFamily()) {
-  case ISAFamily::RDNA1:
-  case ISAFamily::RDNA2:
-  case ISAFamily::RDNA3:
-    return true;
-  default:
-    break;
-  }
-
-  return false;
-}
-
-int TargetInfo::getWarpSize() const { return isCDNA() ? 64 : 32; }
+int TargetInfo::getWarpSize() const { return isCDNA(getISAFamily()) ? 64 : 32; }
 
 int TargetInfo::getSharedMemorySize() const {
   int kbytes = getISAFamily() == ISAFamily::CDNA4 ? 160 : 64;
@@ -126,35 +98,23 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   mlir::LLVM::AMD::llStore(rewriter, loc, ptr, val, pred);
 }
 
-bool TargetInfo::canUseStMatrix(RankedTensorType tensorTy,
-                                ArrayRef<unsigned> repShape,
-                                ArrayRef<unsigned> paddedRepShape,
-                                ArrayRef<unsigned> order,
-                                int swizzleByteSize) const {
-  // AMD does not support stmatrix
-  return false;
-}
-
 bool TargetInfo::canUseLDSTransLoad(int bitwidth) const {
   return getISAFamily() == ISAFamily::CDNA4 &&
          llvm::is_contained({16, 8, 4, 6}, bitwidth);
 }
 
-void TargetInfo::storeMatrixShared(RewriterBase &rewriter, Location loc,
-                                   Value ptr, Value val) const {
-  llvm::report_fatal_error("AMDGPU does not support stmatrix");
-}
-
 Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
                               std::optional<Value> ctaId, Type elemTy,
-                              Value pred) const {
+                              Value pred, Operation *localLoadOp) const {
   if (ctaId.has_value()) {
     llvm::report_fatal_error(
         "AMDGPU does not support cross-CTA shared memory transfers");
   }
   Value falseVal = rewriter.create<LLVM::ConstantOp>(
       loc, elemTy, rewriter.getZeroAttr(elemTy));
-  return mlir::LLVM::AMD::llLoad(rewriter, loc, ptr, elemTy, pred, falseVal);
+  bool addAliasGroup = localLoadOp && isSyncedViaAsyncWait(localLoadOp);
+  return mlir::LLVM::AMD::llLoad(rewriter, loc, ptr, elemTy, pred, falseVal,
+                                 triton::CacheModifier::NONE, addAliasGroup);
 }
 
 Value TargetInfo::shuffleXor(RewriterBase &rewriter, Location loc, Value val,
@@ -178,7 +138,7 @@ Value TargetInfo::shuffleIdx(RewriterBase &rewriter, Location loc, Value val,
 }
 
 Value TargetInfo::programId(RewriterBase &rewriter, Location loc,
-                            ModuleOp moduleOp, int axis) const {
+                            ModuleOp moduleOp, ProgramIDDim axis) const {
   return LLVM::AMD::llGetPid(loc, rewriter, moduleOp, axis);
 }
 
@@ -312,14 +272,14 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
                             unsigned interleave) const {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
 
-  if (isCDNA() && getISAFamily() == ISAFamily::CDNA4 &&
+  if (getISAFamily() == ISAFamily::CDNA4 &&
       warpReduceSwap16or32(rewriter, loc, acc, op, numLaneToReduce, interleave))
     return true;
   if (numLaneToReduce != getWarpSize())
     return false;
-  if (isCDNA() && getISAFamily() == ISAFamily::CDNA1)
+  if (isCDNA(getISAFamily()) && getISAFamily() == ISAFamily::CDNA1)
     return false;
-  if (isRDNA() && getISAFamily() != ISAFamily::RDNA3)
+  if (isRDNA(getISAFamily()) && getISAFamily() != ISAFamily::RDNA3)
     return false;
 
   Operation *reduxOp = op.getSingleCombiner();
@@ -420,7 +380,7 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
     buf = createDppReduxOpWithBoundCtrl(valType, buf, 1 + dppCtrlRowShr,
                                         allRows, allBanks);
 
-    if (isCDNA()) {
+    if (isCDNA(getISAFamily())) {
       // row_bcast:15 row_mask:0xa
       buf = createDppReduxOpWithBoundCtrl(
           valType, buf, static_cast<uint32_t>(DppCtrl::BCAST15), 0xa, allBanks);
@@ -433,12 +393,12 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
       // RDNA doesn't have broadcast dpp mode
       Type actualType = castToAndSExtInt(rewriter, loc, buf, valType, 32);
 
-      Value permlaneResult =
-          LLVM::createLLVMIntrinsicCallOp(
-              rewriter, loc, "llvm.amdgcn.permlanex16", actualType,
-              ValueRange{buf, buf, b.i32_val(-1), b.i32_val(-1), b.true_val(),
-                         b.false_val()})
-              ->getResult(0);
+      // Lanes 0-15 read from lane 31 and lanes 16-31 read from lane 15.
+      Value permlaneResult = rewriter
+                                 .create<ROCDL::PermlaneX16Op>(
+                                     loc, actualType, buf, buf, b.i32_val(-1),
+                                     b.i32_val(-1), true, false)
+                                 .getRes();
       buf = truncAndCastFromInt(rewriter, loc, buf, valType, 32);
       permlaneResult =
           truncAndCastFromInt(rewriter, loc, permlaneResult, valType, 32);
@@ -595,12 +555,6 @@ bool TargetInfo::supportVectorizedAtomics() const {
   // Note: not currently tested or used, but AMD generally supports vectorized
   // atomics.
   return true;
-}
-
-void TargetInfo::localStoreOpAnnotation(triton::gpu::LocalStoreOp op,
-                                        size_t localStoreOpCount,
-                                        Type type) const {
-  storeOpSchedAnnotations(op, localStoreOpCount, type);
 }
 
 bool TargetInfo::supportsDirectToLdsLoadBitWidth(int bitWidth) const {
