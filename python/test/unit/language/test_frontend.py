@@ -4,6 +4,7 @@ import triton.language as tl
 from triton._filecheck import filecheck_test, run_filecheck_test, run_parser
 from triton.compiler.errors import CompilationError
 import pytest
+from typing import NamedTuple
 
 # ===-----------------------------------------------------------------------===#
 # Unit Tests
@@ -307,7 +308,7 @@ def test_aggregate_with_constexpr():
     # CHECK: arith.addi %arg0, %cst : tensor<4xi32>
 
 
-@tl.constexpr_function
+@triton.constexpr_function
 def constexpr_function(x):
     return x + 1
 
@@ -344,12 +345,12 @@ def test_reassign_aggregate_with_constexpr():
     agg = agg.modify(tl.arange(4, 8))
 
 
-@tl.constexpr_function
+@triton.constexpr_function
 def make_shape(m, n):
     return (m, n)
 
 
-@tl.constexpr_function
+@triton.constexpr_function
 def add_shape_dims(m, n):
     return m + n
 
@@ -364,7 +365,7 @@ def test_constexpr_getitem():
     tl.arange(4, sum)
 
 
-@tl.constexpr_function
+@triton.constexpr_function
 def make_constexpr_closure(x):
     x = tl.constexpr(x)
 
@@ -385,7 +386,7 @@ def test_constexpr_closure():
     closure((128, 128))
 
 
-@tl.constexpr_function
+@triton.constexpr_function
 def make_constexpr_generator(f):
     f = tl.constexpr(f)
 
@@ -421,7 +422,7 @@ def test_constexpr_generator():
     generator(lhs)
 
 
-@tl.constexpr_function
+@triton.constexpr_function
 def Box(T):
 
     @tl.core._aggregate
@@ -509,3 +510,53 @@ def test_return_in_while():
         kernel.warmup(grid=(1, ))
 
     assert "Cannot have `return` statements inside `while` or `for` statements in triton" in str(e.value)
+
+
+class TensorPtr(NamedTuple):
+    test: tl.constexpr
+
+
+class TestTuple(NamedTuple):
+    __test__ = False
+    test: TensorPtr
+
+
+@triton.jit
+def foo(test: TestTuple):
+    x: tl.constexpr = tl.constexpr(1)
+    for i in tl.range(x):
+        # Tests that it compiles and is usable.
+        tl.static_assert(test.test.test == 1)
+
+
+def test_tuple_constexpr():
+    test = TestTuple(test=TensorPtr(tl.constexpr(1)))
+    _ = foo.warmup(test, grid=(1, 0))
+
+
+@tl.core._aggregate
+class AggregateWithConstexprFunction:
+    val: tl.constexpr
+    val_squared: tl.constexpr
+
+    def __init__(self, val):
+        self.val = tl.constexpr(val)
+        self.val_squared = tl.constexpr(self.square_val())
+
+    @triton.constexpr_function
+    def square_val(self):
+        return self.val * self.val
+
+
+@filecheck_test
+@triton.jit
+def test_aggregate_constexpr_function():
+    agg = AggregateWithConstexprFunction(4)
+    # CHECK: call @{{.*}}anchor{{.*}}cconstexpr_4_
+    anchor(agg.val)
+
+    # CHECK: call @{{.*}}anchor{{.*}}cconstexpr_16_
+    anchor(agg.val_squared)
+
+    # CHECK: call @{{.*}}anchor{{.*}}cconstexpr_16_
+    anchor(agg.square_val())
